@@ -20,9 +20,16 @@ const callStatus = rpc.declare({
 const callApply = rpc.declare({
 	object: 'luci.cr881x_wan_mode',
 	method: 'apply',
-	params: [ 'mode', 'port1', 'port2', 'auto_mac' ],
+	params: [ 'mode', 'port1', 'port2', 'auto_mac', 'mac1', 'mac2' ],
 	expect: {}
 });
+
+function mac_is_valid(value) {
+	if (!value)
+		return true;
+
+	return /^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$/.test(value);
+}
 
 function ensure_style() {
 	if (document.getElementById(STYLE_ID))
@@ -427,6 +434,32 @@ return view.extend({
 				])
 			])
 		]);
+		const wan1MacInput = E('input', {
+			type: 'text',
+			class: 'cbi-input-text',
+			style: 'width:100%;',
+			placeholder: '02:11:22:33:44:55'
+		});
+		const wan2MacInput = E('input', {
+			type: 'text',
+			class: 'cbi-input-text',
+			style: 'width:100%;',
+			placeholder: '02:11:22:33:44:66'
+		});
+		const wan1MacRow = E('div', { class: 'cwm-field' }, [
+			E('label', {}, [ _('WAN1 MAC (optional)') ]),
+			wan1MacInput,
+			E('div', { class: 'cwm-help', style: 'margin-top:4px;' }, [
+				_('Leave empty to keep current.')
+			])
+		]);
+		const wan2MacRow = E('div', { class: 'cwm-field' }, [
+			E('label', {}, [ _('WAN2 MAC (optional)') ]),
+			wan2MacInput,
+			E('div', { class: 'cwm-help', style: 'margin-top:4px;' }, [
+				_('Leave empty to keep current.')
+			])
+		]);
 
 		const validationNode = E('span', { class: 'cwm-chip', style: 'display:none;' });
 
@@ -509,9 +542,12 @@ return view.extend({
 		}
 
 		function sync_ui() {
+			const showManualMac = (selectedMode === 'dual-wan' && !autoMacCheckbox.checked);
 			wan1Row.style.display = (selectedMode === 'all-lan') ? 'none' : '';
 			wan2Row.style.display = (selectedMode === 'dual-wan') ? '' : 'none';
 			autoMacRow.style.display = (selectedMode === 'dual-wan') ? '' : 'none';
+			wan1MacRow.style.display = showManualMac ? '' : 'none';
+			wan2MacRow.style.display = showManualMac ? '' : 'none';
 			update_mode_cards(modeCards, selectedMode);
 			update_preview();
 			validate_selection();
@@ -539,6 +575,9 @@ return view.extend({
 			validate_selection();
 			update_preview();
 		});
+		autoMacCheckbox.addEventListener('change', function() {
+			sync_ui();
+		});
 
 		refreshBtn.addEventListener('click', ui.createHandlerFn(this, function() {
 			return refresh_status();
@@ -553,9 +592,22 @@ return view.extend({
 			const p1 = wan1Sel.value;
 			const p2 = wan2Sel.value;
 			const autoMac = autoMacCheckbox.checked ? '1' : '';
+			const mac1 = wan1MacInput.value.trim();
+			const mac2 = wan2MacInput.value.trim();
+
+			if (!autoMac && selectedMode === 'dual-wan') {
+				if (!mac_is_valid(mac1)) {
+					ui.addNotification(null, E('p', {}, [ _('Invalid WAN1 MAC address') ]), 'error');
+					return;
+				}
+				if (!mac_is_valid(mac2)) {
+					ui.addNotification(null, E('p', {}, [ _('Invalid WAN2 MAC address') ]), 'error');
+					return;
+				}
+			}
 
 			applyBtn.disabled = true;
-			return callApply(selectedMode, p1, p2, autoMac).then(function(res) {
+			return callApply(selectedMode, p1, p2, autoMac, mac1, mac2).then(function(res) {
 				if (!res || !res.ok) {
 					ui.addNotification(null,
 						E('p', (res && (res.error || res.output)) || _('Failed to apply WAN mode.')),
@@ -617,7 +669,7 @@ return view.extend({
 				E('section', { class: 'cwm-panel' }, [
 					E('h3', { style: 'margin:0 0 8px;' }, [ _('Target Layout') ]),
 					E('div', { class: 'cwm-mode-grid' }, [ modeCardsWrap ]),
-					E('div', { class: 'cwm-field-grid' }, [ wan1Row, wan2Row, autoMacRow ]),
+					E('div', { class: 'cwm-field-grid' }, [ wan1Row, wan2Row, autoMacRow, wan1MacRow, wan2MacRow ]),
 					E('div', { style: 'margin-top:10px;' }, [ validationNode ]),
 					E('div', { class: 'cwm-preview' }, [
 						E('div', { class: 'cwm-row' }, [

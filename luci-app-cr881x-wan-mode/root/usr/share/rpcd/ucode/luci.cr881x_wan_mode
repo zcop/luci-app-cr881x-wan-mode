@@ -50,6 +50,48 @@ function run_helper(args) {
 	};
 }
 
+function run_uci(args) {
+	let command = 'uci -q';
+	let output = '';
+
+	for (let i = 0; i < length(args); i++)
+		command += ' ' + shell_quote(args[i]);
+
+	command += ' 2>&1';
+
+	const fd = popen(command, 'r');
+	if (fd == null) {
+		return {
+			code: -1,
+			output: 'failed to execute uci'
+		};
+	}
+
+	for (let line = fd.read('line'); length(line); line = fd.read('line'))
+		output += line;
+
+	return {
+		code: fd.close(),
+		output: trim(output)
+	};
+}
+
+function valid_mac(mac) {
+	if (!mac)
+		return false;
+
+	let parts = split(mac, ':');
+	if (length(parts) != 6)
+		return false;
+
+	for (let i = 0; i < length(parts); i++) {
+		if (!match(parts[i], /^[0-9A-Fa-f]{2}$/))
+			return false;
+	}
+
+	return true;
+}
+
 function schedule_restart_async() {
 	/* Return RPC response first, then bounce services in background
 	 * to avoid browser-side XHR aborts during long restart output.
@@ -135,7 +177,9 @@ const methods = {
 			mode: 'string',
 			port1: 'string',
 			port2: 'string',
-			auto_mac: 'string'
+			auto_mac: 'string',
+			mac1: 'string',
+			mac2: 'string'
 		},
 		call: function(request) {
 			if (!array_contains(valid_modes, request.args.mode)) {
@@ -147,6 +191,8 @@ const methods = {
 			}
 
 			let args = [];
+			let mac1 = '';
+			let mac2 = '';
 
 			if (request.args.mode == 'all-lan') {
 				args = [ 'all-lan' ];
@@ -184,6 +230,48 @@ const methods = {
 
 				if (request.args.auto_mac) {
 					args[length(args)] = '--random-mac';
+				}
+				else {
+					mac1 = trim(request.args.mac1 || '');
+					mac2 = trim(request.args.mac2 || '');
+
+					if (mac1 && !valid_mac(mac1)) {
+						return {
+							ok: false,
+							code: 1,
+							error: 'invalid WAN1 MAC address'
+						};
+					}
+
+					if (mac2 && !valid_mac(mac2)) {
+						return {
+							ok: false,
+							code: 1,
+							error: 'invalid WAN2 MAC address'
+						};
+					}
+
+					if (mac1) {
+						const uci1 = run_uci([ 'set', `network.wan.macaddr=${mac1}` ]);
+						if (uci1.code != 0) {
+							return {
+								ok: false,
+								code: uci1.code,
+								error: uci1.output || 'failed to set WAN1 MAC'
+							};
+						}
+					}
+
+					if (mac2) {
+						const uci2 = run_uci([ 'set', `network.wan2.macaddr=${mac2}` ]);
+						if (uci2.code != 0) {
+							return {
+								ok: false,
+								code: uci2.code,
+								error: uci2.output || 'failed to set WAN2 MAC'
+							};
+						}
+					}
 				}
 			}
 
