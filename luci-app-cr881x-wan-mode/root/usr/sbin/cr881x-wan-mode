@@ -12,7 +12,7 @@ Usage:
   cr881x-wan-mode status
   cr881x-wan-mode all-lan [--no-restart]
   cr881x-wan-mode single-wan <port> [--no-restart]
-  cr881x-wan-mode dual-wan <port1> <port2> [--no-restart]
+  cr881x-wan-mode dual-wan <port1> <port2> [--random-mac] [--no-restart]
 
 Valid ports: lan1 lan2 lan3 wan
 
@@ -20,6 +20,7 @@ Examples:
   cr881x-wan-mode all-lan
   cr881x-wan-mode single-wan wan
   cr881x-wan-mode dual-wan wan lan3
+  cr881x-wan-mode dual-wan wan lan3 --random-mac
 EOF
 }
 
@@ -113,6 +114,60 @@ set_wan_v4v6() {
 	uci -q set network."$iface6".proto='dhcpv6'
 }
 
+get_base_macaddr() {
+	local mac=""
+
+	mac="$(get_mac_label)"
+	[ -n "$mac" ] || mac="$(cat /sys/class/net/wan/address 2>/dev/null)"
+	[ -n "$mac" ] || mac="$(cat /sys/class/net/lan1/address 2>/dev/null)"
+
+	[ -n "$mac" ] && macaddr_canonicalize "$mac"
+}
+
+ensure_unique_dual_wan_macs() {
+	local cur1 cur2 base mac1 mac2
+
+	cur1="$(uci -q get network.wan.macaddr || true)"
+	cur2="$(uci -q get network.wan2.macaddr || true)"
+
+	if [ -n "$cur1" ] && [ -n "$cur2" ] && [ "$cur1" != "$cur2" ]; then
+		return 0
+	fi
+
+	if [ -n "$cur1" ] && [ -n "$cur2" ] && [ "$cur1" = "$cur2" ]; then
+		mac1="$cur1"
+		mac2="$(macaddr_add "$cur1" 1)"
+	elif [ -n "$cur1" ]; then
+		mac1="$cur1"
+		mac2="$(macaddr_add "$cur1" 1)"
+	elif [ -n "$cur2" ]; then
+		mac2="$cur2"
+		mac1="$(macaddr_add "$cur2" 1)"
+	else
+		base="$(get_base_macaddr)"
+		[ -n "$base" ] || return 0
+		base="$(macaddr_unsetbit_mc "$(macaddr_setbit_la "$base")")"
+		mac1="$(macaddr_add "$base" 1)"
+		mac2="$(macaddr_add "$base" 2)"
+	fi
+
+	uci -q set network.wan.macaddr="$mac1"
+	uci -q set network.wan2.macaddr="$mac2"
+}
+
+set_random_dual_wan_macs() {
+	local mac1 mac2
+
+	mac1="$(macaddr_random)"
+	mac2="$(macaddr_random)"
+	while [ "$mac2" = "$mac1" ]; do
+		mac2="$(macaddr_random)"
+	done
+
+	uci -q set network.wan.macaddr="$mac1"
+	uci -q set network.wan2.macaddr="$mac2"
+}
+
 apply_all_lan() {
 	ensure_br_lan
 	set_br_lan_ports "$PORTS"
@@ -145,6 +200,7 @@ apply_dual_wan() {
 	local wan1="$1"
 	local wan2="$2"
 	local lan_ports
+	local random_mac="$3"
 
 	lan_ports="$(list_minus "$wan1" "$wan2")"
 
@@ -153,6 +209,11 @@ apply_dual_wan() {
 
 	set_wan_v4v6 wan "$wan1"
 	set_wan_v4v6 wan2 "$wan2"
+	if [ "$random_mac" = "1" ]; then
+		set_random_dual_wan_macs
+	else
+		ensure_unique_dual_wan_macs
+	fi
 
 	set_wan_zone_networks "wan wan6 wan2 wan2_6"
 }
@@ -232,13 +293,26 @@ dual-wan)
 	require_board
 	wan1="$2"
 	wan2="$3"
+	shift 3
 	[ -n "$wan1" ] || die "missing WAN1 port"
 	[ -n "$wan2" ] || die "missing WAN2 port"
 	valid_port "$wan1" || die "invalid WAN1 port '$wan1'"
 	valid_port "$wan2" || die "invalid WAN2 port '$wan2'"
 	[ "$wan1" = "$wan2" ] && die "WAN1 and WAN2 must be different ports"
-	[ "$4" = "--no-restart" ] && no_restart=1 || no_restart=0
-	apply_dual_wan "$wan1" "$wan2"
+	no_restart=0
+	random_mac=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--no-restart)
+			no_restart=1
+			;;
+		--random-mac)
+			random_mac=1
+			;;
+		esac
+		shift
+	done
+	apply_dual_wan "$wan1" "$wan2" "$random_mac"
 	commit_and_maybe_restart "$no_restart"
 	show_status
 	;;

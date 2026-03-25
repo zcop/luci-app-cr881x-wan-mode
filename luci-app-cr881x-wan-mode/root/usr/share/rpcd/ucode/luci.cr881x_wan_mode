@@ -134,7 +134,8 @@ const methods = {
 		args: {
 			mode: 'string',
 			port1: 'string',
-			port2: 'string'
+			port2: 'string',
+			auto_mac: 'string'
 		},
 		call: function(request) {
 			if (!array_contains(valid_modes, request.args.mode)) {
@@ -180,6 +181,10 @@ const methods = {
 				}
 
 				args = [ 'dual-wan', request.args.port1, request.args.port2 ];
+
+				if (request.args.auto_mac) {
+					args[length(args)] = '--random-mac';
+				}
 			}
 
 			args[length(args)] = '--no-restart';

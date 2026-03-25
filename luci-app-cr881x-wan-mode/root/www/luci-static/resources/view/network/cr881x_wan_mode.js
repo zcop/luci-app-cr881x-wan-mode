@@ -20,7 +20,7 @@ const callStatus = rpc.declare({
 const callApply = rpc.declare({
 	object: 'luci.cr881x_wan_mode',
 	method: 'apply',
-	params: [ 'mode', 'port1', 'port2' ],
+	params: [ 'mode', 'port1', 'port2', 'auto_mac' ],
 	expect: {}
 });
 
@@ -417,6 +417,16 @@ return view.extend({
 			E('label', {}, [ _('WAN2 Port') ]),
 			wan2Sel
 		]);
+		const autoMacCheckbox = E('input', { type: 'checkbox' });
+		const autoMacRow = E('div', { class: 'cwm-field' }, [
+			E('label', {}, [ _('Auto-generate WAN MACs') ]),
+			E('div', { class: 'cwm-help' }, [
+				autoMacCheckbox,
+				E('span', { style: 'margin-left:8px;' }, [
+					_('Assign unique random MACs to WAN1 and WAN2 when applying dual WAN.')
+				])
+			])
+		]);
 
 		const validationNode = E('span', { class: 'cwm-chip', style: 'display:none;' });
 
@@ -501,6 +511,7 @@ return view.extend({
 		function sync_ui() {
 			wan1Row.style.display = (selectedMode === 'all-lan') ? 'none' : '';
 			wan2Row.style.display = (selectedMode === 'dual-wan') ? '' : 'none';
+			autoMacRow.style.display = (selectedMode === 'dual-wan') ? '' : 'none';
 			update_mode_cards(modeCards, selectedMode);
 			update_preview();
 			validate_selection();
@@ -541,9 +552,10 @@ return view.extend({
 
 			const p1 = wan1Sel.value;
 			const p2 = wan2Sel.value;
+			const autoMac = autoMacCheckbox.checked ? '1' : '';
 
 			applyBtn.disabled = true;
-			return callApply(selectedMode, p1, p2).then(function(res) {
+			return callApply(selectedMode, p1, p2, autoMac).then(function(res) {
 				if (!res || !res.ok) {
 					ui.addNotification(null,
 						E('p', (res && (res.error || res.output)) || _('Failed to apply WAN mode.')),
@@ -605,7 +617,7 @@ return view.extend({
 				E('section', { class: 'cwm-panel' }, [
 					E('h3', { style: 'margin:0 0 8px;' }, [ _('Target Layout') ]),
 					E('div', { class: 'cwm-mode-grid' }, [ modeCardsWrap ]),
-					E('div', { class: 'cwm-field-grid' }, [ wan1Row, wan2Row ]),
+					E('div', { class: 'cwm-field-grid' }, [ wan1Row, wan2Row, autoMacRow ]),
 					E('div', { style: 'margin-top:10px;' }, [ validationNode ]),
 					E('div', { class: 'cwm-preview' }, [
 						E('div', { class: 'cwm-row' }, [
@@ -635,6 +647,9 @@ return view.extend({
 						]),
 						E('div', { style: 'margin-top:8px;' }, [
 							_('If LuCI temporarily disconnects during apply, wait for service restart and click Refresh.')
+						]),
+						E('div', { style: 'margin-top:8px;' }, [
+							_('Dual WAN should use distinct MAC addresses. You can set them manually in network config or enable auto-generate.')
 						]),
 						E('div', { style: 'margin-top:8px;' }, [
 							_('Helper path: '),
