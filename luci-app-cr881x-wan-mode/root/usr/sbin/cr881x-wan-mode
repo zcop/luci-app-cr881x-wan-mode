@@ -3,6 +3,7 @@
 set -e
 
 . /lib/functions/system.sh
+. /lib/functions/ipv4.sh
 
 PORTS="lan1 lan2 lan3 wan"
 
@@ -65,6 +66,48 @@ ensure_br_lan() {
 	uci -q set network.lan='interface'
 	uci -q set network.lan.device='br-lan'
 	[ -n "$(uci -q get network.lan.proto)" ] || uci -q set network.lan.proto='static'
+	normalize_lan_ipv4
+}
+
+normalize_lan_ipv4() {
+	local raw ipaddr suffix netmask __tmp
+
+	[ "$(uci -q get network.lan.proto)" = "static" ] || return 0
+
+	raw="$(uci -q get network.lan.ipaddr || true)"
+	raw="${raw%% *}"
+
+	case "$raw" in
+	*/*)
+		ipaddr="${raw%/*}"
+		suffix="${raw#*/}"
+		case "$suffix" in
+		*.*.*.*)
+			netmask="$suffix"
+			;;
+		*)
+			if [ "$suffix" -ge 0 ] 2>/dev/null && [ "$suffix" -le 32 ] 2>/dev/null; then
+				prefix2netmask netmask "$suffix"
+			fi
+			;;
+		esac
+		;;
+	*)
+		ipaddr="$raw"
+		netmask="$(uci -q get network.lan.netmask || true)"
+		;;
+	esac
+
+	if ! str2ip __tmp "$ipaddr"; then
+		ipaddr='192.168.2.1'
+	fi
+	if ! str2ip __tmp "$netmask"; then
+		netmask='255.255.255.0'
+	fi
+
+	uci_delete_quiet network.lan.ipaddr
+	uci -q set network.lan.ipaddr="$ipaddr"
+	uci -q set network.lan.netmask="$netmask"
 }
 
 set_br_lan_ports() {
