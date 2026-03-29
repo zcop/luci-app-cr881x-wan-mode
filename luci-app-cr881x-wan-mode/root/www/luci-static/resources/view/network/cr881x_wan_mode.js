@@ -165,6 +165,10 @@ function ensure_style() {
 			color: var(--text-color-medium, #5f6c7b);
 		}
 
+		.cwm-field-full {
+			grid-column: 1 / -1;
+		}
+
 		.cwm-preview {
 			margin-top: 10px;
 			padding: 10px;
@@ -425,7 +429,7 @@ return view.extend({
 			wan2Sel
 		]);
 		const autoMacCheckbox = E('input', { type: 'checkbox' });
-		const autoMacRow = E('div', { class: 'cwm-field' }, [
+		const autoMacRow = E('div', { class: 'cwm-field cwm-field-full' }, [
 			E('label', {}, [ _('Auto-generate WAN MACs') ]),
 			E('div', { class: 'cwm-help' }, [
 				autoMacCheckbox,
