@@ -120,24 +120,54 @@ set_br_lan_ports() {
 	done
 }
 
+find_wan_zone() {
+	local s
+
+	for s in $(uci -q show firewall | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p'); do
+		[ "$(uci -q get "firewall.${s}.name")" = "wan" ] && {
+			echo "$s"
+			return 0
+		}
+	done
+
+	echo "wan"
+}
+
+dedupe_wan_zones() {
+	local keep="$1"
+	local s
+
+	for s in $(uci -q show firewall | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p'); do
+		[ "$s" = "$keep" ] && continue
+		[ "$(uci -q get "firewall.${s}.name")" = "wan" ] && uci_delete_quiet "firewall.${s}"
+	done
+}
+
 ensure_wan_zone() {
-	uci -q set firewall.wan='zone'
-	uci -q set firewall.wan.name='wan'
-	[ -n "$(uci -q get firewall.wan.input)" ] || uci -q set firewall.wan.input='REJECT'
-	[ -n "$(uci -q get firewall.wan.output)" ] || uci -q set firewall.wan.output='ACCEPT'
-	[ -n "$(uci -q get firewall.wan.forward)" ] || uci -q set firewall.wan.forward='REJECT'
-	[ "$(uci -q get firewall.wan.masq)" = "1" ] || uci -q set firewall.wan.masq='1'
-	[ "$(uci -q get firewall.wan.mtu_fix)" = "1" ] || uci -q set firewall.wan.mtu_fix='1'
+	local zone
+
+	zone="$(find_wan_zone)"
+	uci -q set "firewall.${zone}=zone"
+	uci -q set "firewall.${zone}.name=wan"
+	[ -n "$(uci -q get "firewall.${zone}.input")" ] || uci -q set "firewall.${zone}.input=REJECT"
+	[ -n "$(uci -q get "firewall.${zone}.output")" ] || uci -q set "firewall.${zone}.output=ACCEPT"
+	[ -n "$(uci -q get "firewall.${zone}.forward")" ] || uci -q set "firewall.${zone}.forward=REJECT"
+	[ "$(uci -q get "firewall.${zone}.masq")" = "1" ] || uci -q set "firewall.${zone}.masq=1"
+	[ "$(uci -q get "firewall.${zone}.mtu_fix")" = "1" ] || uci -q set "firewall.${zone}.mtu_fix=1"
+
+	dedupe_wan_zones "$zone"
+	echo "$zone"
 }
 
 set_wan_zone_networks() {
 	local nets="$1"
+	local zone
 	local n
 
-	ensure_wan_zone
-	uci_delete_quiet firewall.wan.network
+	zone="$(ensure_wan_zone)"
+	uci_delete_quiet "firewall.${zone}.network"
 	for n in $nets; do
-		uci -q add_list firewall.wan.network="$n"
+		uci -q add_list "firewall.${zone}.network=$n"
 	done
 }
 
