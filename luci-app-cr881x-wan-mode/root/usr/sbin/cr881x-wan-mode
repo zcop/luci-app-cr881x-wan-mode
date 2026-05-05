@@ -6,6 +6,7 @@ set -e
 . /lib/functions/ipv4.sh
 
 PORTS="lan1 lan2 lan3 wan"
+CONTROLLED_WAN_NETS="wan wan6 wan2 wan2_6"
 
 usage() {
 	cat <<'EOF'
@@ -36,6 +37,27 @@ uci_delete_quiet() {
 
 valid_port() {
 	case " $PORTS " in
+	*" $1 "*)
+		return 0
+		;;
+	esac
+	return 1
+}
+
+list_contains() {
+	local list="$1"
+	local val="$2"
+
+	case " $list " in
+	*" $val "*)
+		return 0
+		;;
+	esac
+	return 1
+}
+
+is_controlled_wan_net() {
+	case " $CONTROLLED_WAN_NETS " in
 	*" $1 "*)
 		return 0
 		;;
@@ -162,10 +184,28 @@ ensure_wan_zone() {
 set_wan_zone_networks() {
 	local nets="$1"
 	local zone
+	local existing
+	local final=""
 	local n
 
 	zone="$(ensure_wan_zone)"
+
+	# Keep non-managed WAN uplinks (e.g. wwan) already present in zone.
+	# We only control wan/wan6/wan2/wan2_6 membership.
+	for n in $nets; do
+		[ -n "$n" ] || continue
+		list_contains "$final" "$n" || final="$final $n"
+	done
+
+	existing="$(uci -q get "firewall.${zone}.network" || true)"
+	for n in $existing; do
+		[ -n "$n" ] || continue
+		is_controlled_wan_net "$n" && continue
+		list_contains "$final" "$n" || final="$final $n"
+	done
+
 	uci_delete_quiet "firewall.${zone}.network"
+	nets="${final# }"
 	for n in $nets; do
 		uci -q add_list "firewall.${zone}.network=$n"
 	done
