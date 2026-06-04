@@ -1,0 +1,308 @@
+#!/bin/sh
+
+set -e
+
+. /lib/functions/system.sh
+
+PORTS="lan1 lan2 lan3 wan"
+CPU0=1
+CPU1=2
+
+usage() {
+	cat <<'EOF'
+Usage:
+  cr881x-datapath-tune status
+  cr881x-datapath-tune one-wan [wan1|wan2|1|2|auto]
+  cr881x-datapath-tune dual-wan
+  cr881x-datapath-tune auto
+
+Profiles:
+  one-wan  Pin the selected WAN datapath to CPU0 and leave the other core quiet.
+  dual-wan Keep CR881x WAN conduits split: physical wan(lan4)/eth0 on CPU0,
+           lan1/lan2/lan3/eth1 on CPU1.
+
+WAN numbers follow luci-app-cr881x-wan-mode:
+  wan1 = network.wan.device
+  wan2 = network.wan2.device
+EOF
+}
+
+die() {
+	echo "cr881x-datapath-tune: $*" >&2
+	exit 1
+}
+
+require_board() {
+	local b
+
+	b="$(board_name)"
+	[ "$b" = "xiaomi,cr881x" ] || die "unsupported board '$b' (expected xiaomi,cr881x)"
+}
+
+valid_port() {
+	case " $PORTS " in
+	*" $1 "*)
+		return 0
+		;;
+	esac
+	return 1
+}
+
+ui_port_label() {
+	[ "$1" = "wan" ] && echo "lan4" || echo "$1"
+}
+
+wan_port() {
+	case "$1" in
+	wan1|1)
+		uci -q get network.wan.device || true
+		;;
+	wan2|2)
+		uci -q get network.wan2.device || true
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+port_lower_dev() {
+	local port="$1"
+	local line lower
+
+	valid_port "$port" || die "invalid CR881x port '$port'"
+
+	# Prefer runtime DSA naming such as "wan@eth0" when available.
+	if command -v ip >/dev/null 2>&1 && [ -e "/sys/class/net/$port" ]; then
+		line="$(ip -o link show dev "$port" 2>/dev/null || true)"
+		lower="${line#*@}"
+		lower="${lower%%:*}"
+		case "$lower" in
+		eth0|eth1)
+			echo "$lower"
+			return 0
+			;;
+		esac
+	fi
+
+	# CR881x DTS mapping:
+	#   YT9215 user port "wan" (shown as lan4 in LuCI) may use eth0.
+	#   lan1/lan2/lan3 use the primary eth1 conduit.
+	case "$port" in
+	wan)
+		echo eth0
+		;;
+	lan1|lan2|lan3)
+		echo eth1
+		;;
+	esac
+}
+
+net_irq() {
+	local dev="$1"
+	local idx line irq
+
+	case "$dev" in
+	eth0)
+		idx=1
+		;;
+	eth1)
+		idx=2
+		;;
+	*)
+		return 1
+		;;
+	esac
+
+	line="$(grep -Ei 'nss-dp-gmac' /proc/interrupts | sed -n "${idx}p")"
+	[ -n "$line" ] || return 1
+
+	irq="${line%%:*}"
+	irq="${irq##*[!0-9]}"
+	echo "$irq"
+}
+
+set_governor_performance() {
+	local f
+
+	for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+		[ -e "$f" ] || continue
+		echo performance > "$f" 2>/dev/null || true
+	done
+}
+
+set_dev_cpu() {
+	local dev="$1"
+	local mask="$2"
+	local irq
+
+	[ -e "/sys/class/net/$dev" ] || return 0
+
+	irq="$(net_irq "$dev" || true)"
+	if [ -n "$irq" ] && [ -e "/proc/irq/$irq/smp_affinity" ]; then
+		echo "$mask" > "/proc/irq/$irq/smp_affinity" 2>/dev/null || true
+	fi
+
+	if [ -e "/sys/class/net/$dev/queues/rx-0/rps_cpus" ]; then
+		echo "$mask" > "/sys/class/net/$dev/queues/rx-0/rps_cpus" 2>/dev/null || true
+	fi
+}
+
+clear_user_port_rps() {
+	local port f
+
+	for port in $PORTS br-lan; do
+		for f in /sys/class/net/"$port"/queues/rx-*/rps_cpus; do
+			[ -e "$f" ] || continue
+			echo 0 > "$f" 2>/dev/null || true
+		done
+	done
+}
+
+apply_one_wan() {
+	local which="${1:-auto}"
+	local port lower
+
+	case "$which" in
+	auto)
+		port="$(wan_port wan1)"
+		[ -n "$port" ] || port="$(wan_port wan2)"
+		;;
+	wan1|1|wan2|2)
+		port="$(wan_port "$which")"
+		;;
+	*)
+		die "invalid WAN selector '$which'"
+		;;
+	esac
+
+	[ -n "$port" ] || die "selected WAN is not configured"
+	valid_port "$port" || die "selected WAN uses unsupported device '$port'"
+
+	lower="$(port_lower_dev "$port")"
+
+	set_governor_performance
+	clear_user_port_rps
+
+	# One-WAN profile favors one hot datapath core and leaves the other core
+	# for OS work. The inactive conduit is parked on CPU1.
+	set_dev_cpu eth0 "$CPU1"
+	set_dev_cpu eth1 "$CPU1"
+	set_dev_cpu "$lower" "$CPU0"
+
+	echo "applied: one-wan $(ui_port_label "$port") ($lower -> CPU0)"
+}
+
+apply_dual_wan() {
+	local port1 port2 lower1 lower2
+
+	port1="$(wan_port wan1)"
+	port2="$(wan_port wan2)"
+	[ -n "$port1" ] || die "wan1 is not configured"
+	[ -n "$port2" ] || die "wan2 is not configured"
+	valid_port "$port1" || die "wan1 uses unsupported device '$port1'"
+	valid_port "$port2" || die "wan2 uses unsupported device '$port2'"
+
+	lower1="$(port_lower_dev "$port1")"
+	lower2="$(port_lower_dev "$port2")"
+
+	set_governor_performance
+	clear_user_port_rps
+
+	if [ "$lower1" = "$lower2" ]; then
+		set_dev_cpu eth0 "$CPU0"
+		set_dev_cpu eth1 "$CPU1"
+		echo "applied: dual-wan shared conduit $(ui_port_label "$port1")/$(ui_port_label "$port2") ($lower1); no IRQ split possible"
+		return 0
+	fi
+
+	set_dev_cpu eth0 "$CPU0"
+	set_dev_cpu eth1 "$CPU1"
+
+	echo "applied: dual-wan $(ui_port_label "$port1") ($lower1) + $(ui_port_label "$port2") ($lower2); eth0->CPU0 eth1->CPU1"
+}
+
+current_mode() {
+	local wan1 wan2
+
+	wan1="$(wan_port wan1)"
+	wan2="$(wan_port wan2)"
+
+	if [ -n "$wan1" ] && [ -n "$wan2" ]; then
+		echo dual-wan
+	elif [ -n "$wan1" ] || [ -n "$wan2" ]; then
+		echo one-wan
+	else
+		echo all-lan
+	fi
+}
+
+show_status() {
+	local mode port1 port2 lower1 lower2 irq f
+
+	mode="$(current_mode)"
+	port1="$(wan_port wan1)"
+	port2="$(wan_port wan2)"
+	[ -n "$port1" ] && lower1="$(port_lower_dev "$port1")" || lower1="<unset>"
+	[ -n "$port2" ] && lower2="$(port_lower_dev "$port2")" || lower2="<unset>"
+
+	echo "board: $(board_name)"
+	echo "mode: $mode"
+	echo "wan1: ${port1:-<unset>} ($(ui_port_label "${port1:-}") / $lower1)"
+	echo "wan2: ${port2:-<unset>} ($(ui_port_label "${port2:-}") / $lower2)"
+
+	for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+		[ -e "$f" ] || continue
+		echo "$f: $(cat "$f" 2>/dev/null)"
+	done
+
+	for lower in eth0 eth1; do
+		irq="$(net_irq "$lower" || true)"
+		if [ -n "$irq" ]; then
+			echo "$lower irq: $irq affinity $(cat "/proc/irq/$irq/smp_affinity" 2>/dev/null)"
+		else
+			echo "$lower irq: <unknown>"
+		fi
+		if [ -e "/sys/class/net/$lower/queues/rx-0/rps_cpus" ]; then
+			echo "$lower rps_cpus: $(cat "/sys/class/net/$lower/queues/rx-0/rps_cpus" 2>/dev/null)"
+		fi
+	done
+}
+
+require_board
+
+cmd="${1:-status}"
+case "$cmd" in
+status)
+	show_status
+	;;
+one-wan|single-wan)
+	apply_one_wan "${2:-auto}"
+	show_status
+	;;
+dual-wan)
+	apply_dual_wan
+	show_status
+	;;
+auto)
+	case "$(current_mode)" in
+	dual-wan)
+		apply_dual_wan
+		;;
+	one-wan)
+		apply_one_wan auto
+		;;
+	*)
+		die "no WAN interface configured by cr881x-wan-mode"
+		;;
+	esac
+	show_status
+	;;
+help|-h|--help)
+	usage
+	;;
+*)
+	usage
+	exit 1
+	;;
+esac
